@@ -1,10 +1,10 @@
-from decimal import Decimal
 import time
-from typing import Any
 import uuid
+from decimal import Decimal
+from typing import Any
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -92,10 +92,7 @@ async def chat_completions(
 
     chat_req = ChatRequest(
         model=req.model,
-        messages=[
-            ChatMessage(role=m.role, content=m.content, name=m.name)
-            for m in req.messages
-        ],
+        messages=[ChatMessage(role=m.role, content=m.content, name=m.name) for m in req.messages],
         temperature=req.temperature,
         top_p=req.top_p,
         max_tokens=req.max_tokens,
@@ -128,9 +125,7 @@ async def chat_completions(
     cost_usd = Decimal("0.0")
     if model_config.price_per_1k:
         input_cost = (
-            Decimal(chat_resp.usage.prompt_tokens)
-            / Decimal(1000)
-            * model_config.price_per_1k.input
+            Decimal(chat_resp.usage.prompt_tokens) / Decimal(1000) * model_config.price_per_1k.input
         )
         output_cost = (
             Decimal(chat_resp.usage.completion_tokens)

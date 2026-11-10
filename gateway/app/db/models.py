@@ -48,9 +48,7 @@ class CompatibleArray(TypeDecorator[list[str]]):
 class APIKey(Base):
     __tablename__ = "api_keys"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     key_prefix: Mapped[str] = mapped_column(Text, nullable=False)
     key_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False, index=True)
@@ -72,9 +70,7 @@ class APIKey(Base):
 class RequestRecord(Base):
     __tablename__ = "requests"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     key_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("api_keys.id", ondelete="CASCADE"), nullable=False
     )
@@ -91,9 +87,7 @@ class RequestRecord(Base):
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6), nullable=True)
     pii_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    pii_types: Mapped[list[str]] = mapped_column(
-        CompatibleArray, default=list, nullable=False
-    )
+    pii_types: Mapped[list[str]] = mapped_column(CompatibleArray, default=list, nullable=False)
     trace_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -101,15 +95,17 @@ class RequestRecord(Base):
 
     api_key: Mapped["APIKey"] = relationship("APIKey", back_populates="requests")
 
-    __table_args__ = (
-        Index("requests_key_created", "key_id", created_at.desc()),
-    )
+    __table_args__ = (Index("requests_key_created", "key_id", created_at.desc()),)
 
 
 class AuditLog(Base):
     __tablename__ = "audit_log"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        Integer().with_variant(BigInteger, "postgresql"),
+        primary_key=True,
+        autoincrement=True,
+    )
     actor: Mapped[str] = mapped_column(Text, nullable=False)
     action: Mapped[str] = mapped_column(Text, nullable=False)
     entity: Mapped[str] = mapped_column(Text, nullable=False)

@@ -1,7 +1,7 @@
-from datetime import datetime, timedelta, timezone
+import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
-import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -66,8 +66,10 @@ async def create_key(
     req: CreateKeyRequest,
     db: AsyncSession = Depends(get_db),
 ) -> Any:
+    key_id = uuid.uuid4()
     raw_key, key_prefix, key_hash = generate_api_key()
     key_obj = APIKey(
+        id=key_id,
         name=req.name,
         key_prefix=key_prefix,
         key_hash=key_hash,
@@ -81,7 +83,7 @@ async def create_key(
     audit = AuditLog(
         actor="admin",
         action="key.created",
-        entity=f"api_key:{key_obj.id}",
+        entity=f"api_key:{key_id}",
         after={"name": req.name, "key_prefix": key_prefix},
     )
     db.add(audit)
@@ -124,7 +126,11 @@ async def list_keys(
     ]
 
 
-@router.patch("/keys/{key_id}", response_model=KeyResponse, dependencies=[Depends(verify_admin_token)])
+@router.patch(
+    "/keys/{key_id}",
+    response_model=KeyResponse,
+    dependencies=[Depends(verify_admin_token)],
+)
 async def update_key(
     key_id: uuid.UUID,
     req: UpdateKeyRequest,
@@ -190,7 +196,7 @@ async def get_usage(
     days: int = Query(default=30, ge=1, le=365),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    since = datetime.now(UTC) - timedelta(days=days)
     stmt = (
         select(
             RequestRecord.key_id,
@@ -225,11 +231,7 @@ async def get_recent_requests(
     limit: int = Query(default=100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    stmt = (
-        select(RequestRecord)
-        .order_by(desc(RequestRecord.created_at))
-        .limit(limit)
-    )
+    stmt = select(RequestRecord).order_by(desc(RequestRecord.created_at)).limit(limit)
     result = await db.execute(stmt)
     records = result.scalars().all()
     return [
@@ -301,7 +303,11 @@ async def demo_provider_down(
     result = await db.execute(stmt)
     health = result.scalars().first()
     if not health:
-        health = ProviderHealth(provider=req.provider, status="down", last_error=f"Simulated failure: {req.error_mode}")
+        health = ProviderHealth(
+            provider=req.provider,
+            status="down",
+            last_error=f"Simulated failure: {req.error_mode}",
+        )
         db.add(health)
     else:
         health.status = "down"

@@ -1,9 +1,9 @@
 import hashlib
 import hmac
 import secrets
+import uuid
 from dataclasses import dataclass
 from decimal import Decimal
-import uuid
 
 from fastapi import Depends, Header
 from sqlalchemy import select

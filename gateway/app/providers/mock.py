@@ -1,7 +1,7 @@
 import asyncio
-from collections.abc import AsyncIterator
 import time
 import uuid
+from collections.abc import AsyncIterator
 
 from app.providers.base import (
     ChatChoice,
@@ -75,8 +75,11 @@ class MockProvider:
                 break
 
         # Generate a deterministic response
-        reply_content = f"Mock response for: {last_user_content}" if last_user_content else "Hello from Mock Provider!"
-        
+        if last_user_content:
+            reply_content = f"Mock response for: {last_user_content}"
+        else:
+            reply_content = "Hello from Mock Provider!"
+
         # Calculate approximate token counts
         input_text = " ".join(m.content for m in req.messages)
         prompt_tokens = max(1, len(input_text.split()))
@@ -113,7 +116,10 @@ class MockProvider:
                 last_user_content = m.content
                 break
 
-        reply_content = f"Mock response for: {last_user_content}" if last_user_content else "Hello from Mock Provider!"
+        if last_user_content:
+            reply_content = f"Mock response for: {last_user_content}"
+        else:
+            reply_content = "Hello from Mock Provider!"
         req_id = f"chatcmpl-mock-{uuid.uuid4().hex[:8]}"
         created = int(time.time())
 

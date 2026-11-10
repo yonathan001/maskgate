@@ -1,3 +1,6 @@
+VENV ?= .venv
+BIN = $(if $(wildcard $(VENV)/bin/*),../$(VENV)/bin/,)
+
 .PHONY: up down test lint typecheck check migrate seed loadtest build clean
 
 up:
@@ -10,23 +13,23 @@ build:
 	docker compose build
 
 migrate:
-	cd gateway && alembic upgrade head
+	cd gateway && $(BIN)alembic upgrade head
 
 seed:
 	python3 -c "print('Seed placeholder - keys created via admin API')"
 
 lint:
-	cd gateway && ruff check .
+	cd gateway && $(BIN)ruff check . && $(BIN)ruff format --check .
 
 lint-fix:
-	cd gateway && ruff check --fix .
-	cd gateway && ruff format .
+	cd gateway && $(BIN)ruff check --fix .
+	cd gateway && $(BIN)ruff format .
 
 typecheck:
-	cd gateway && mypy app
+	cd gateway && $(BIN)mypy app
 
 test:
-	cd gateway && pytest -v
+	cd gateway && $(BIN)pytest -v
 
 check: lint typecheck test
 

@@ -10,7 +10,7 @@ from app.api.admin import router as admin_router
 from app.api.health import router as health_router
 from app.api.v1 import router as v1_router
 from app.core.errors import MaskgateError, format_error_response, maskgate_exception_handler
-from app.db.session import close_db, get_engine
+from app.db.session import close_db
 
 
 @asynccontextmanager

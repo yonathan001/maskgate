@@ -1,4 +1,3 @@
-import pytest
 from app.core.auth import constant_time_compare, generate_api_key, hash_key
 
 

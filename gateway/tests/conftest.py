@@ -1,30 +1,20 @@
-import asyncio
+import os
 from collections.abc import AsyncGenerator
 from decimal import Decimal
-import os
-import pytest
+
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.config import get_settings
 from app.core.auth import generate_api_key
 from app.db.models import APIKey, Base
 from app.db.session import get_db
 from app.main import create_app
-from app.providers.registry import get_model_registry
 
 TEST_DB_URL = os.getenv("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 
-@pytest.fixture(scope="session")
-def event_loop() -> AsyncGenerator[asyncio.AbstractEventLoop, None]:
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture
 async def test_engine():
     engine = create_async_engine(
         TEST_DB_URL,

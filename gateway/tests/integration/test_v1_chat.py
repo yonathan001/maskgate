@@ -107,9 +107,7 @@ async def test_chat_completions_success(
 
 
 @pytest.mark.asyncio
-async def test_list_models(
-    client: AsyncClient, created_api_key: tuple[str, APIKey]
-) -> None:
+async def test_list_models(client: AsyncClient, created_api_key: tuple[str, APIKey]) -> None:
     raw_key, _ = created_api_key
     resp = await client.get(
         "/v1/models",
@@ -120,3 +118,31 @@ async def test_list_models(
     assert data["object"] == "list"
     ids = [item["id"] for item in data["data"]]
     assert "mock-fast" in ids
+
+
+@pytest.mark.asyncio
+async def test_official_openai_client_compatibility(
+    client: AsyncClient, created_api_key: tuple[str, APIKey]
+) -> None:
+    import openai
+
+    raw_key, _ = created_api_key
+    ai_client = openai.AsyncOpenAI(
+        base_url="http://testserver/v1",
+        api_key=raw_key,
+        http_client=client,
+    )
+
+    completion = await ai_client.chat.completions.create(
+        model="mock-fast",
+        messages=[{"role": "user", "content": "Hello from official OpenAI SDK!"}],
+    )
+
+    assert completion.id.startswith("chatcmpl-")
+    assert completion.model == "mock-fast"
+    assert len(completion.choices) == 1
+    assert "Mock response for: Hello from official OpenAI SDK!" in (
+        completion.choices[0].message.content or ""
+    )
+    assert completion.usage is not None
+    assert completion.usage.total_tokens > 0

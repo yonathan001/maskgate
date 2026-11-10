@@ -1,13 +1,14 @@
 import time
 import uuid
 from typing import Any
-from fastapi import FastAPI, HTTPException, Request
+
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 app = FastAPI(title="Maskgate Standalone Mock Provider")
 
 # Global mock state for simulating failures
-state = {
+state: dict[str, str | None] = {
     "failure_mode": None,  # None, "500", "429", "timeout", etc.
 }
 
