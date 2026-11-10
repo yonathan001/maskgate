@@ -1,0 +1,78 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: maskgate-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: maskgate
+      POSTGRES_PASSWORD: maskgate
+      POSTGRES_DB: maskgate
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maskgate -d maskgate"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: maskgate-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mock-provider:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    container_name: maskgate-mock-provider
+    restart: unless-stopped
+    command: ["uvicorn", "app.providers.mock_server:app", "--host", "0.0.0.0", "--port", "9000"]
+    ports:
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    container_name: maskgate-gateway
+    restart: unless-stopped
+    environment:
+      APP_ENV: dev
+      DATABASE_URL: postgresql+asyncpg://maskgate:maskgate@postgres:5432/maskgate
+      REDIS_URL: redis://redis:6379/0
+      ADMIN_TOKEN: change-me
+      DEMO_MODE: "true"
+      LOG_RAW_PAYLOADS: "false"
+      MOCK_PROVIDER_URL: http://mock-provider:9000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mock-provider:
+        condition: service_started
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+volumes:
+  postgres_data:
+  redis_data:

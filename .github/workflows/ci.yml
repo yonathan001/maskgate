@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-typecheck:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "./gateway[dev]"
+
+      - name: Ruff Lint & Format Check
+        run: |
+          cd gateway
+          ruff check .
+          ruff format --check .
+
+      - name: Mypy Typecheck
+        run: |
+          cd gateway
+          mypy app
+
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: maskgate
+          POSTGRES_PASSWORD: maskgate
+          POSTGRES_DB: maskgate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "./gateway[dev]"
+
+      - name: Run Alembic Migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://maskgate:maskgate@localhost:5432/maskgate
+        run: |
+          cd gateway
+          alembic upgrade head
+
+      - name: Run Pytest
+        env:
+          DATABASE_URL: postgresql+asyncpg://maskgate:maskgate@localhost:5432/maskgate
+          REDIS_URL: redis://localhost:6379/0
+          ADMIN_TOKEN: test-admin-token
+        run: |
+          cd gateway
+          pytest -v
+
+  gitleaks:
+    name: Gitleaks Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
