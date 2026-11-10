@@ -1,0 +1,17 @@
+models:
+  - name: gpt-4o-mini
+    providers:
+      - provider: openai
+        upstream_model: gpt-4o-mini
+      - provider: anthropic
+        upstream_model: claude-3-5-haiku-latest
+    price_per_1k:
+      input: 0.00015
+      output: 0.0006
+  - name: mock-fast
+    providers:
+      - provider: mock
+        upstream_model: mock-fast
+    price_per_1k:
+      input: 0.0
+      output: 0.0
