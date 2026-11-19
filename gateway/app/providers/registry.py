@@ -5,8 +5,10 @@ from pathlib import Path
 import yaml
 
 from app.config import get_settings
+from app.providers.anthropic import AnthropicProvider
 from app.providers.base import Provider
 from app.providers.mock import MockProvider
+from app.providers.openai import OpenAIProvider
 
 
 @dataclass
@@ -34,6 +36,8 @@ class ModelRegistry:
         self.models: dict[str, ModelConfig] = {}
         self.providers: dict[str, Provider] = {
             "mock": MockProvider(),
+            "openai": OpenAIProvider(),
+            "anthropic": AnthropicProvider(),
         }
         self.load_config()
 

@@ -10,12 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.auth import AuthenticatedKey, authenticate_bearer_key
 from app.core.errors import BadRequestError, ModelNotFoundError
+from app.core.pipeline import RequestPipeline
 from app.db.models import RequestRecord
 from app.db.session import get_db
 from app.providers.base import ChatMessage, ChatRequest
 from app.providers.registry import get_model_registry
 
 router = APIRouter(prefix="/v1", tags=["v1"])
+pipeline = RequestPipeline()
 
 
 class MessageInput(BaseModel):
@@ -84,12 +86,6 @@ async def chat_completions(
             f"Prompt exceeds maximum character length of {settings.max_prompt_chars}"
         )
 
-    # For Phase 1: resolve the primary route and provider
-    route = model_config.providers[0]
-    provider = registry.get_provider(route.provider)
-    if not provider:
-        raise ModelNotFoundError(f"Provider '{route.provider}' is not configured")
-
     chat_req = ChatRequest(
         model=req.model,
         messages=[ChatMessage(role=m.role, content=m.content, name=m.name) for m in req.messages],
@@ -100,23 +96,21 @@ async def chat_completions(
         stream=req.stream,
         user=req.user,
         tools=req.tools,
-        upstream_model=route.upstream_model,
     )
 
-    prov_start = time.perf_counter()
-    chat_resp = await provider.chat(chat_req)
-    prov_end = time.perf_counter()
+    pipeline_result = await pipeline.execute(chat_req, model_config, db)
+    chat_resp = pipeline_result.response
 
     end_time = time.perf_counter()
     total_latency_ms = int((end_time - start_time) * 1000)
-    provider_ms = int((prov_end - prov_start) * 1000)
+    provider_ms = pipeline_result.provider_latency_ms
     gateway_overhead_ms = max(0, total_latency_ms - provider_ms)
 
     request_id = str(uuid.uuid4())
 
     # Set response headers as specified in Section 8
-    response.headers["X-Maskgate-Provider"] = provider.name
-    response.headers["X-Maskgate-Fallback"] = "false"
+    response.headers["X-Maskgate-Provider"] = pipeline_result.provider_used
+    response.headers["X-Maskgate-Fallback"] = "true" if pipeline_result.fallback_used else "false"
     response.headers["X-Maskgate-Cache"] = "miss"
     response.headers["X-Maskgate-PII-Count"] = "0"
     response.headers["X-Request-Id"] = request_id
@@ -139,8 +133,8 @@ async def chat_completions(
         id=uuid.UUID(request_id),
         key_id=auth.id,
         model=req.model,
-        provider_used=provider.name,
-        fallback_used=False,
+        provider_used=pipeline_result.provider_used,
+        fallback_used=pipeline_result.fallback_used,
         cache_hit=False,
         streamed=False,
         status_code=200,

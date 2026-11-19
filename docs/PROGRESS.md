@@ -19,3 +19,18 @@
   - Requests never log raw prompts or responses (only metadata recorded).
 - **Open questions:**
   - None. Acceptance criteria passed.
+
+## Phase 2: Real providers, retries, fallback
+- **Status:** Complete (Acceptance criteria passed)
+- **Done:**
+  - Implemented `OpenAIProvider` adapter with error normalization (429, 5xx, timeouts, network, 4xx).
+  - Implemented `AnthropicProvider` adapter translating messages and top-level system prompts.
+  - Implemented `RequestPipeline` with per-attempt timeout, exponential backoff with jitter, retryable vs non-retryable error handling, and provider route failover.
+  - Implemented provider health tracking recorded to PostgreSQL.
+  - Added unit test suite for adapters with RESPX (`test_providers.py`).
+  - Added comprehensive integration tests (`test_fallback.py`) covering: 500 retry and success, 429 retry, fallback across providers, 4xx non-retry, and 502 when all providers fail.
+- **Decisions made:**
+  - Non-retryable 4xx client errors immediately stop retries on the current provider and fail over or return appropriate errors.
+  - Provider health is updated in `provider_health` table upon success or exhausted retry failures.
+- **Open questions:**
+  - None. Acceptance criteria passed.
