@@ -47,6 +47,18 @@ async def test_admin_create_and_list_keys(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_get_usage(client: AsyncClient) -> None:
+    headers = {"X-Admin-Token": "change-me"}
+    resp = await client.get("/admin/usage?days=30", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "days" in data
+    assert data["days"] == 30
+    assert "usage" in data
+    assert isinstance(data["usage"], list)
+
+
+@pytest.mark.asyncio
 async def test_health_check(client: AsyncClient) -> None:
     resp = await client.get("/health")
     assert resp.status_code == 200

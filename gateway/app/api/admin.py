@@ -200,14 +200,14 @@ async def get_usage(
     stmt = (
         select(
             RequestRecord.key_id,
-            func.date_trunc("day", RequestRecord.created_at).label("day"),
+            func.date(RequestRecord.created_at).label("day"),
             func.count(RequestRecord.id).label("requests_count"),
             func.coalesce(func.sum(RequestRecord.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(RequestRecord.output_tokens), 0).label("output_tokens"),
             func.coalesce(func.sum(RequestRecord.cost_usd), Decimal("0.0")).label("total_cost_usd"),
         )
         .where(RequestRecord.created_at >= since)
-        .group_by(RequestRecord.key_id, "day")
+        .group_by(RequestRecord.key_id, func.date(RequestRecord.created_at))
         .order_by("day")
     )
     result = await db.execute(stmt)

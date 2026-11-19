@@ -10,12 +10,19 @@ from app.api.admin import router as admin_router
 from app.api.health import router as health_router
 from app.api.v1 import router as v1_router
 from app.core.errors import MaskgateError, format_error_response, maskgate_exception_handler
-from app.db.session import close_db
+from app.core.limits import LimitManager
+from app.db.session import close_db, get_sessionmaker
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Lifespan startup
+    # Lifespan startup: reconcile spend counters from Postgres
+    try:
+        sessionmaker = get_sessionmaker()
+        async with sessionmaker() as session:
+            await LimitManager().reconcile_all_active_keys(session)
+    except Exception:
+        pass
     yield
     # Lifespan shutdown
     await close_db()

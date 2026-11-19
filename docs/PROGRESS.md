@@ -34,3 +34,19 @@
   - Provider health is updated in `provider_health` table upon success or exhausted retry failures.
 - **Open questions:**
   - None. Acceptance criteria passed.
+
+## Phase 3: Cost, limits, budgets
+- **Status:** Complete (Acceptance criteria passed)
+- **Done:**
+  - Implemented exact token-to-cost calculation (`calculate_cost`) in `gateway/app/core/cost.py`.
+  - Implemented `LimitManager` in `gateway/app/core/limits.py` with fixed-window rate limiting (`INCR` + `EXPIRE`), returning `429` with `Retry-After`.
+  - Implemented monthly spend tracking and budget enforcement (`402 BudgetExhaustedError`), mirrored in Redis and reconciled from PostgreSQL.
+  - Implemented startup counter reconciliation in FastAPI lifespan (`gateway/app/main.py`).
+  - Added unit tests for cost math with Decimal precision (`test_cost.py`) and limit manager (`test_limits.py`).
+  - Added integration tests (`test_budget_and_limits.py`) verifying 429 on rate limit, 402 on budget exhausted, and counter reconciliation across cache resets.
+  - Verified `GET /admin/usage` endpoint functionality.
+- **Decisions made:**
+  - Per ADR 1: rate limiter fails open on Redis error; budget checks fail closed or fall back to PostgreSQL.
+  - Used `InMemoryRedis` store to enable fast, zero-dependency testing and resilient fallback.
+- **Open questions:**
+  - None. Acceptance criteria passed.

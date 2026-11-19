@@ -9,7 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.auth import AuthenticatedKey, authenticate_bearer_key
+from app.core.cost import calculate_cost
 from app.core.errors import BadRequestError, ModelNotFoundError
+from app.core.limits import LimitManager
 from app.core.pipeline import RequestPipeline
 from app.db.models import RequestRecord
 from app.db.session import get_db
@@ -18,6 +20,7 @@ from app.providers.registry import get_model_registry
 
 router = APIRouter(prefix="/v1", tags=["v1"])
 pipeline = RequestPipeline()
+limit_manager = LimitManager()
 
 
 class MessageInput(BaseModel):
@@ -86,6 +89,10 @@ async def chat_completions(
             f"Prompt exceeds maximum character length of {settings.max_prompt_chars}"
         )
 
+    # Step 2: Rate limits and monthly spend budget check
+    await limit_manager.check_rate_limit(auth.id, auth.rate_limit_per_min)
+    await limit_manager.check_budget(auth.id, auth.monthly_budget_usd, db)
+
     chat_req = ChatRequest(
         model=req.model,
         messages=[ChatMessage(role=m.role, content=m.content, name=m.name) for m in req.messages],
@@ -115,18 +122,18 @@ async def chat_completions(
     response.headers["X-Maskgate-PII-Count"] = "0"
     response.headers["X-Request-Id"] = request_id
 
-    # Calculate cost
+    # Calculate cost using model pricing
     cost_usd = Decimal("0.0")
     if model_config.price_per_1k:
-        input_cost = (
-            Decimal(chat_resp.usage.prompt_tokens) / Decimal(1000) * model_config.price_per_1k.input
+        cost_usd = calculate_cost(
+            prompt_tokens=chat_resp.usage.prompt_tokens,
+            completion_tokens=chat_resp.usage.completion_tokens,
+            price_input_per_1k=model_config.price_per_1k.input,
+            price_output_per_1k=model_config.price_per_1k.output,
         )
-        output_cost = (
-            Decimal(chat_resp.usage.completion_tokens)
-            / Decimal(1000)
-            * model_config.price_per_1k.output
-        )
-        cost_usd = input_cost + output_cost
+
+    # Record spend in Redis counter
+    await limit_manager.record_spend(auth.id, cost_usd)
 
     # Record request metadata in database (no raw prompt/response logged)
     request_record = RequestRecord(
