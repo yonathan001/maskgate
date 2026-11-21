@@ -50,3 +50,18 @@
   - Used `InMemoryRedis` store to enable fast, zero-dependency testing and resilient fallback.
 - **Open questions:**
   - None. Acceptance criteria passed.
+
+## Phase 4: Cache and streaming
+- **Status:** Complete (Acceptance criteria passed)
+- **Done:**
+  - Implemented deterministic canonical JSON cache key builder and `ResponseCache` in `gateway/app/core/cache.py`.
+  - Integrated cache lookup & storage in `/v1/chat/completions` for non-streaming requests with `temperature == 0.0`.
+  - Implemented SSE streaming pass-through (`stream: true`) with standard OpenAI chunk formatting and final `data: [DONE]`.
+  - Implemented streaming fallback before first chunk is sent, and graceful error event emission if a stream drops midway.
+  - Added unit tests for cache key canonicalization, temperature gating, and get/set (`test_cache.py`).
+  - Added integration tests (`test_cache_and_streaming.py`) verifying cache hits, streaming delivery, midway stream interruption handling, and streaming failover.
+- **Decisions made:**
+  - Cache applies to deterministic requests (`temperature=0.0` or `None`) for non-streaming calls.
+  - Fallback is permitted before the first chunk is sent; once streaming starts, midway failures emit an SSE error event and end cleanly.
+- **Open questions:**
+  - None. Acceptance criteria passed.

@@ -4,11 +4,13 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.auth import AuthenticatedKey, authenticate_bearer_key
+from app.core.cache import ResponseCache, build_cache_key, should_cache
 from app.core.cost import calculate_cost
 from app.core.errors import BadRequestError, ModelNotFoundError
 from app.core.limits import LimitManager
@@ -21,6 +23,7 @@ from app.providers.registry import get_model_registry
 router = APIRouter(prefix="/v1", tags=["v1"])
 pipeline = RequestPipeline()
 limit_manager = LimitManager()
+response_cache = ResponseCache()
 
 
 class MessageInput(BaseModel):
@@ -71,7 +74,7 @@ async def chat_completions(
     response: Response,
     auth: AuthenticatedKey = Depends(authenticate_bearer_key),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
+) -> Any:
     start_time = time.perf_counter()
     settings = get_settings()
     registry = get_model_registry()
@@ -104,6 +107,87 @@ async def chat_completions(
         user=req.user,
         tools=req.tools,
     )
+
+    # Handle streaming request
+    if req.stream:
+        # Record stream request in background/DB
+        stream_id = str(uuid.uuid4())
+        request_record = RequestRecord(
+            id=uuid.UUID(stream_id),
+            key_id=auth.id,
+            model=req.model,
+            provider_used=model_config.providers[0].provider if model_config.providers else "none",
+            fallback_used=False,
+            cache_hit=False,
+            streamed=True,
+            status_code=200,
+            latency_ms=0,
+            gateway_overhead_ms=0,
+            cost_usd=Decimal("0.0"),
+            pii_count=0,
+            pii_types=[],
+            trace_id=None,
+        )
+        db.add(request_record)
+        await db.commit()
+
+        stream_gen = pipeline.execute_stream(chat_req, model_config, db)
+        headers = {
+            "X-Maskgate-Stream": "true",
+            "X-Request-Id": stream_id,
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+        return StreamingResponse(
+            stream_gen,
+            media_type="text/event-stream",
+            headers=headers,
+        )
+
+    # Step 4: Cache check for non-streaming deterministic requests
+    cache_key = None
+    if should_cache(req.temperature):
+        cache_key = build_cache_key(
+            model=req.model,
+            messages=[m.model_dump() for m in req.messages],
+            temperature=req.temperature,
+            top_p=req.top_p,
+            max_tokens=req.max_tokens,
+            stop=req.stop,
+            tools=req.tools,
+        )
+        cached_data = await response_cache.get(cache_key)
+        if cached_data is not None:
+            request_id = str(uuid.uuid4())
+            response.headers["X-Maskgate-Provider"] = cached_data.get("_provider", "mock")
+            response.headers["X-Maskgate-Fallback"] = "false"
+            response.headers["X-Maskgate-Cache"] = "hit"
+            response.headers["X-Maskgate-PII-Count"] = "0"
+            response.headers["X-Request-Id"] = request_id
+
+            # Record cache hit in database (0 provider latency, 0 cost)
+            rec = RequestRecord(
+                id=uuid.UUID(request_id),
+                key_id=auth.id,
+                model=req.model,
+                provider_used=cached_data.get("_provider", "mock"),
+                fallback_used=False,
+                cache_hit=True,
+                streamed=False,
+                status_code=200,
+                latency_ms=int((time.perf_counter() - start_time) * 1000),
+                gateway_overhead_ms=int((time.perf_counter() - start_time) * 1000),
+                cost_usd=Decimal("0.0"),
+                pii_count=0,
+                pii_types=[],
+                trace_id=None,
+            )
+            db.add(rec)
+            await db.commit()
+
+            # Clean internal metadata before returning
+            clean_resp = {k: v for k, v in cached_data.items() if not k.startswith("_")}
+            return clean_resp
 
     pipeline_result = await pipeline.execute(chat_req, model_config, db)
     chat_resp = pipeline_result.response
@@ -157,7 +241,7 @@ async def chat_completions(
     db.add(request_record)
     await db.commit()
 
-    return {
+    resp_payload = {
         "id": chat_resp.id,
         "object": chat_resp.object,
         "created": chat_resp.created,
@@ -179,3 +263,11 @@ async def chat_completions(
             "total_tokens": chat_resp.usage.total_tokens,
         },
     }
+
+    # Store in cache if cacheable
+    if cache_key is not None:
+        cache_data_to_store = dict(resp_payload)
+        cache_data_to_store["_provider"] = pipeline_result.provider_used
+        await response_cache.set(cache_key, cache_data_to_store)
+
+    return resp_payload

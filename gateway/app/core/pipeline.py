@@ -1,5 +1,7 @@
 import asyncio
+import json
 import random
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -144,3 +146,84 @@ class RequestPipeline:
         # All providers exhausted
         err_msg = f"All providers failed to fulfill request. Last error: {last_error}"
         raise AllProvidersFailedError(err_msg)
+
+    async def execute_stream(
+        self,
+        req: ChatRequest,
+        model_config: ModelConfig,
+        db: AsyncSession | None = None,
+    ) -> AsyncIterator[str]:
+        registry = get_model_registry()
+        last_error: Exception | None = None
+
+        for _route_idx, route in enumerate(model_config.providers):
+            provider = registry.get_provider(route.provider)
+            if not provider:
+                continue
+
+            req.upstream_model = route.upstream_model
+            first_chunk_sent = False
+
+            try:
+                stream_iter = provider.chat_stream(req)
+                async for chunk in stream_iter:
+                    first_chunk_sent = True
+                    # Serialize chunk to OpenAI SSE event format
+                    chunk_dict = {
+                        "id": chunk.id,
+                        "object": chunk.object,
+                        "created": chunk.created,
+                        "model": req.model,
+                        "choices": [
+                            {
+                                "index": c.index,
+                                "delta": {
+                                    k: v
+                                    for k, v in [
+                                        ("role", c.delta.role),
+                                        ("content", c.delta.content),
+                                    ]
+                                    if v is not None
+                                },
+                                "finish_reason": c.finish_reason,
+                            }
+                            for c in chunk.choices
+                        ],
+                    }
+                    yield f"data: {json.dumps(chunk_dict)}\n\n"
+
+                # Stream completed successfully
+                yield "data: [DONE]\n\n"
+                await update_provider_health(provider.name, "ok", None, db)
+                return
+
+            except Exception as e:
+                last_error = e
+                await update_provider_health(provider.name, "down", str(e), db)
+
+                if first_chunk_sent:
+                    # Stream already started, cannot fallback: emit error event and end cleanly
+                    err_payload = {
+                        "error": {
+                            "message": f"Stream interrupted: {e}",
+                            "type": "server_error",
+                            "code": "stream_error",
+                        }
+                    }
+                    yield f"data: {json.dumps(err_payload)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+                # Otherwise, fallback to next provider route
+
+        # All providers failed before first chunk was sent
+        err_payload = {
+            "error": {
+                "message": (
+                    f"All providers failed to fulfill streaming request. Last error: {last_error}"
+                ),
+                "type": "bad_gateway",
+                "code": "all_providers_failed",
+            }
+        }
+        yield f"data: {json.dumps(err_payload)}\n\n"
+        yield "data: [DONE]\n\n"
