@@ -65,3 +65,28 @@
   - Fallback is permitted before the first chunk is sent; once streaming starts, midway failures emit an SSE error event and end cleanly.
 - **Open questions:**
   - None. Acceptance criteria passed.
+
+## Phase 5: PII Redaction
+- **Status:** Complete (Acceptance criteria passed)
+- **Done:**
+  - Implemented `RedactionEngine` using Microsoft Presidio (`en_core_web_sm`) and custom recognizers.
+  - Implemented custom recognizers in `gateway/app/redaction/recognizers.py` (`EthiopianPhoneRecognizer` for international & national formats, `NationalIdRecognizer` for generic alphanumeric IDs).
+  - Implemented `StreamRestorer` in `gateway/app/redaction/stream.py` with sliding tail buffer ensuring placeholders split across arbitrary chunk boundaries are reconstructed and restored without leaking placeholders or raw data.
+  - Integrated redaction engine and stream restorer in `gateway/app/api/v1.py`:
+    - Incoming messages are redacted before cache lookup and provider transmission.
+    - Deterministic cache stores sanitized text.
+    - Upstream provider receives only sanitized prompt text.
+    - Outgoing responses restore original values seamlessly (non-streaming and streaming SSE).
+    - Sets `X-Maskgate-PII-Count` response header.
+  - Documented threat model, redaction pipeline, and security invariants in `docs/SECURITY.md`.
+  - Added test suite:
+    - `test_recognizers.py`: Matches and negative cases for Ethiopian phone numbers and National IDs.
+    - `test_redaction_engine.py`: Single & repeated entity redaction, disabled redaction passthrough, bidirectionality.
+    - `test_stream_restorer.py`: Property test slicing placeholders at every possible character boundary and single-character chunks.
+    - `test_privacy_zero_leak.py`: Proves synthetic PII names, emails, phones, and IDs are never transmitted to upstream providers or persisted to database tables.
+- **Decisions made:**
+  - Configured Presidio explicitly with lightweight `en_core_web_sm` to avoid 380MB spacy model download hangs.
+  - Tail buffer in `StreamRestorer` holds trailing bytes up to `max(len(placeholder)) - 1` to prevent premature emission of split placeholder tokens.
+  - Cache stores sanitized text; placeholder restoration runs on cache hit against current request mapping.
+- **Open questions:**
+  - None. Acceptance criteria passed.

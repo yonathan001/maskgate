@@ -1,5 +1,7 @@
+import json
 import time
 import uuid
+from collections.abc import AsyncIterator
 from decimal import Decimal
 from typing import Any
 
@@ -19,11 +21,14 @@ from app.db.models import RequestRecord
 from app.db.session import get_db
 from app.providers.base import ChatMessage, ChatRequest
 from app.providers.registry import get_model_registry
+from app.redaction.engine import RedactionEngine
+from app.redaction.stream import StreamRestorer
 
 router = APIRouter(prefix="/v1", tags=["v1"])
 pipeline = RequestPipeline()
 limit_manager = LimitManager()
 response_cache = ResponseCache()
+redaction_engine = RedactionEngine()
 
 
 class MessageInput(BaseModel):
@@ -96,9 +101,19 @@ async def chat_completions(
     await limit_manager.check_rate_limit(auth.id, auth.rate_limit_per_min)
     await limit_manager.check_budget(auth.id, auth.monthly_budget_usd, db)
 
+    # Step 3: Redact sensitive PII in prompt messages
+    redacted_msgs, placeholder_map, pii_types = redaction_engine.redact_messages(
+        [m.model_dump() for m in req.messages],
+        enabled=auth.redaction_enabled,
+    )
+    pii_count = len(placeholder_map)
+
     chat_req = ChatRequest(
         model=req.model,
-        messages=[ChatMessage(role=m.role, content=m.content, name=m.name) for m in req.messages],
+        messages=[
+            ChatMessage(role=m["role"], content=m["content"], name=m.get("name"))
+            for m in redacted_msgs
+        ],
         temperature=req.temperature,
         top_p=req.top_p,
         max_tokens=req.max_tokens,
@@ -110,7 +125,6 @@ async def chat_completions(
 
     # Handle streaming request
     if req.stream:
-        # Record stream request in background/DB
         stream_id = str(uuid.uuid4())
         request_record = RequestRecord(
             id=uuid.UUID(stream_id),
@@ -124,22 +138,67 @@ async def chat_completions(
             latency_ms=0,
             gateway_overhead_ms=0,
             cost_usd=Decimal("0.0"),
-            pii_count=0,
-            pii_types=[],
+            pii_count=pii_count,
+            pii_types=pii_types,
             trace_id=None,
         )
         db.add(request_record)
         await db.commit()
 
         stream_gen = pipeline.execute_stream(chat_req, model_config, db)
+
+        async def restoring_stream(
+            gen: AsyncIterator[str], p_map: dict[str, str]
+        ) -> AsyncIterator[str]:
+            if not p_map:
+                async for item in gen:
+                    yield item
+                return
+
+            restorer = StreamRestorer(p_map)
+            async for sse_chunk in gen:
+                if not sse_chunk.startswith("data: "):
+                    yield sse_chunk
+                    continue
+                data_str = sse_chunk[6:].strip()
+                if data_str == "[DONE]":
+                    tail = restorer.flush()
+                    if tail:
+                        tail_chunk = {
+                            "id": f"chatcmpl-tail-{stream_id[:8]}",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": req.model,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"content": tail},
+                                    "finish_reason": None,
+                                }
+                            ],
+                        }
+                        yield f"data: {json.dumps(tail_chunk)}\n\n"
+                    yield sse_chunk
+                    continue
+                try:
+                    parsed = json.loads(data_str)
+                    if "choices" in parsed and parsed["choices"]:
+                        delta = parsed["choices"][0].get("delta", {})
+                        if "content" in delta and delta["content"]:
+                            delta["content"] = restorer.feed(delta["content"])
+                    yield f"data: {json.dumps(parsed)}\n\n"
+                except Exception:
+                    yield sse_chunk
+
         headers = {
             "X-Maskgate-Stream": "true",
+            "X-Maskgate-PII-Count": str(pii_count),
             "X-Request-Id": stream_id,
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
         }
         return StreamingResponse(
-            stream_gen,
+            restoring_stream(stream_gen, placeholder_map),
             media_type="text/event-stream",
             headers=headers,
         )
@@ -149,7 +208,7 @@ async def chat_completions(
     if should_cache(req.temperature):
         cache_key = build_cache_key(
             model=req.model,
-            messages=[m.model_dump() for m in req.messages],
+            messages=redacted_msgs,
             temperature=req.temperature,
             top_p=req.top_p,
             max_tokens=req.max_tokens,
@@ -162,7 +221,7 @@ async def chat_completions(
             response.headers["X-Maskgate-Provider"] = cached_data.get("_provider", "mock")
             response.headers["X-Maskgate-Fallback"] = "false"
             response.headers["X-Maskgate-Cache"] = "hit"
-            response.headers["X-Maskgate-PII-Count"] = "0"
+            response.headers["X-Maskgate-PII-Count"] = str(pii_count)
             response.headers["X-Request-Id"] = request_id
 
             # Record cache hit in database (0 provider latency, 0 cost)
@@ -178,15 +237,21 @@ async def chat_completions(
                 latency_ms=int((time.perf_counter() - start_time) * 1000),
                 gateway_overhead_ms=int((time.perf_counter() - start_time) * 1000),
                 cost_usd=Decimal("0.0"),
-                pii_count=0,
-                pii_types=[],
+                pii_count=pii_count,
+                pii_types=pii_types,
                 trace_id=None,
             )
             db.add(rec)
             await db.commit()
 
-            # Clean internal metadata before returning
+            # Clean internal metadata and restore placeholders before returning
             clean_resp = {k: v for k, v in cached_data.items() if not k.startswith("_")}
+            if placeholder_map:
+                for c in clean_resp.get("choices", []):
+                    if "message" in c and "content" in c["message"]:
+                        c["message"]["content"] = redaction_engine.restore_text(
+                            c["message"]["content"], placeholder_map
+                        )
             return clean_resp
 
     pipeline_result = await pipeline.execute(chat_req, model_config, db)
@@ -203,7 +268,7 @@ async def chat_completions(
     response.headers["X-Maskgate-Provider"] = pipeline_result.provider_used
     response.headers["X-Maskgate-Fallback"] = "true" if pipeline_result.fallback_used else "false"
     response.headers["X-Maskgate-Cache"] = "miss"
-    response.headers["X-Maskgate-PII-Count"] = "0"
+    response.headers["X-Maskgate-PII-Count"] = str(pii_count)
     response.headers["X-Request-Id"] = request_id
 
     # Calculate cost using model pricing
@@ -234,8 +299,8 @@ async def chat_completions(
         input_tokens=chat_resp.usage.prompt_tokens,
         output_tokens=chat_resp.usage.completion_tokens,
         cost_usd=cost_usd,
-        pii_count=0,
-        pii_types=[],
+        pii_count=pii_count,
+        pii_types=pii_types,
         trace_id=None,
     )
     db.add(request_record)
@@ -264,10 +329,20 @@ async def chat_completions(
         },
     }
 
-    # Store in cache if cacheable
+    # Store un-restored response in cache if cacheable
     if cache_key is not None:
         cache_data_to_store = dict(resp_payload)
         cache_data_to_store["_provider"] = pipeline_result.provider_used
         await response_cache.set(cache_key, cache_data_to_store)
+
+    # Step 6: Restore placeholders in the final response returned to user
+    if placeholder_map:
+        raw_choices = resp_payload.get("choices")
+        if isinstance(raw_choices, list):
+            for c in raw_choices:
+                if isinstance(c, dict) and "message" in c and "content" in c["message"]:
+                    c["message"]["content"] = redaction_engine.restore_text(
+                        c["message"]["content"], placeholder_map
+                    )
 
     return resp_payload
